@@ -95,27 +95,32 @@ pipeline {
             agent {label 'jenkins'}
             steps {
                 script {
-                    sh '''
-                        bash -euxo pipefail
-
-                        # Configura tu usuario Git (opcional, si no está configurado)
-                        git config user.name "Soratadev"
-                        git config user.email "sorata.arctica@gmail.com"
-
-                        # Asegurarse de estar en develop
-                        git checkout develop
-                        git pull origin develop
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                        sh '''
+                            bash -euxo pipefail
         
-                        # Cambiar a master y traer la última versión
-                        git checkout master
-                        git pull origin master
+                            if [ ! -d repo ]; then
+                              git clone -b develop https://Soratadev:$GITHUB_TOKEN@github.com/Soratadev/todo-list-aws.git repo
+                            fi
         
-                        # Hacer merge de develop en master
-                        git merge --no-ff develop -m "Merge develop into master [Automated by Jenkins]"
+                            cd repo
         
-                        # Push al repositorio remoto
-                        git push origin master
-                    '''
+                            git config user.name "Soratadev"
+                            git config user.email "sorata.arctica@gmail.com"
+        
+                            git remote set-url origin https://Soratadev:$GITHUB_TOKEN@github.com/Soratadev/todo-list-aws.git
+        
+                            git checkout develop
+                            git pull origin develop
+        
+                            git checkout master
+                            git pull origin master
+        
+                            git merge --no-ff develop -m "Merge develop into master [Automated by Jenkins]"
+        
+                            git push origin master
+                        '''
+                    }
                 }
             }
         }
