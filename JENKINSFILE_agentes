@@ -1,0 +1,95 @@
+pipeline {
+    agent any
+    
+    options { skipDefaultCheckout() }
+    
+    environment {
+        DEPLOY_ENV = 'production'   // default | staging | production
+    }
+
+    stages {
+        stage('Get Code') {
+            agent {label 'jenkins'}
+            steps {
+                git branch:'master', url:'https://github.com/Soratadev/todo-list-aws'
+                stash name:'code', includes:'**'
+                cleanWs()
+            }
+        }
+        stage ('Build') {
+            agent {label 'jenkins'}
+            steps {
+                unstash name:'code'
+                sh '''
+                    bash -euxo pipefail <<'E0F'
+                    sam build \
+                        --template-file template.yaml
+                '''
+                stash name:'deploy', includes:'**'
+                cleanWs()
+            }
+        }
+        stage('Validate') {
+            agent {label 'ubuntu'}
+            steps {
+                unstash name:'deploy'
+                sh '''
+                    bash -euxo pipefail <<'E0F'
+
+                    echo "Validating SAM template..."
+
+                    sam validate \
+                      --config-file samconfig.toml \
+                      --config-env ${DEPLOY_ENV} \
+                      --region 'us-east-1'
+                '''
+                stash name:'deploy', includes:'**'
+                cleanWs()
+            }
+        }
+        stage('Deploy') {
+            agent {label 'jenkins'}
+            steps {
+                unstash name:'deploy'
+                sh '''
+                    bash -euxo pipefail <<'E0F'
+
+                    echo "Deploying SAM stack..."
+
+                    sam deploy \
+                      --config-file samconfig.toml \
+                      --config-env ${DEPLOY_ENV} \
+                      --resolve-s3 \
+                      --no-confirm-changeset
+                '''
+                script {
+                    env.BASE_URL = sh(
+                        script: '''
+                            aws cloudformation describe-stacks \
+                            --stack-name production-todo-list-aws \
+                            --query 'Stacks[0].Outputs[?OutputKey==`BaseUrlApi`].OutputValue' \
+                            --region us-east-1 \
+                            --output text
+                        ''', returnStdout: true
+                    ).trim()
+                }
+                stash name:'deploy', includes:'**'
+                cleanWs()
+            }
+        }
+        stage('Rest Test') {
+            agent {label 'jenkins'}
+            steps {
+                unstash name:'deploy'
+                echo "Base URL: ${env.BASE_URL}"
+                sh '''
+                    bash -euxo pipefail <<'EOF'
+                    echo "Running tests against $BASE_URL"
+
+                    pytest test/integration/todoApiTest.py::TestApi::test_api_listtodos
+                    pytest test/integration/todoApiTest.py::TestApi::test_api_gettodo
+                '''
+            }
+        }
+    }
+}
