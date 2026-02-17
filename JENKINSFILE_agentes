@@ -22,6 +22,10 @@ pipeline {
                 sh '''
                     python3 -m flake8 --exit-zero --format=pylint src >flake8.out
                     python3 -m bandit -r src -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}" || true
+                    
+                    whoami
+                    hostname
+                    echo '$WORKSPACE'
                 '''
                 recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')], qualityGates: [[threshold: 10, type: 'TOTAL', unstable: true], [threshold: 11, type: 'TOTAL', unstable: false]]
                 recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')], qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true], [threshold: 2, type: 'TOTAL', unstable: false]]
@@ -36,6 +40,9 @@ pipeline {
                     bash -euxo pipefail <<'E0F'
                     sam build \
                         --template-file template.yaml
+                        
+                    whoami
+                    hostname
                 '''
                 stash name:'deploy', includes:'**'
                 cleanWs()
@@ -54,6 +61,9 @@ pipeline {
                       --config-file samconfig.toml \
                       --config-env ${DEPLOY_ENV} \
                       --region 'us-east-1'
+                      
+                    whoami
+                    hostname
                 '''
                 stash name:'deploy', includes:'**'
                 cleanWs()
@@ -73,6 +83,9 @@ pipeline {
                       --config-env ${DEPLOY_ENV} \
                       --resolve-s3 \
                       --no-confirm-changeset
+                    
+                    whoami
+                    hostname
                 '''
                 script {
                     env.BASE_URL = sh(
@@ -98,8 +111,12 @@ pipeline {
                     bash -euxo pipefail <<'EOF'
                     echo "Running tests against $BASE_URL"
 
-                    pytest test/integration/todoApiTest.py
+                    pytest --junitxml=result-rest.xml test/integration/todoApiTest.py
+                    
+                    whoami
+                    hostname
                 '''
+                junit 'result-rest.xml'
                 stash name:'deploy', includes:'**'
                 cleanWs()
             }
@@ -113,36 +130,38 @@ pipeline {
                         sh '''
                             bash -euxo pipefail
         
-                            if [ ! -d repo ]; then
-                              git clone -b develop https://Soratadev:$GITHUB_TOKEN@github.com/Soratadev/todo-list-aws.git repo
-                            fi
+                            rm -rf repo
         
+                            git clone https://Soratadev:${GITHUB_TOKEN}@github.com/Soratadev/todo-list-aws.git repo
                             cd repo
         
                             git config user.name "Soratadev"
                             git config user.email "sorata.arctica@gmail.com"
         
-                            git remote set-url origin https://Soratadev:$GITHUB_TOKEN@github.com/Soratadev/todo-list-aws.git
+                            # Traer todas las ramas
+                            git fetch origin
         
+                            # Sincronizar develop limpio
                             git checkout develop
-                            git pull origin develop
+                            git reset --hard origin/develop
         
+                            # Sincronizar master limpio
                             git checkout master
-                            git pull origin master
+                            git reset --hard origin/master
+        
+                            # Merge controlado
+                            git config merge.ours.driver true
                             
-                            git merge --no-ff --no-commit develop || true
+                            if git merge --no-ff origin/develop -m "Merge develop into master [Automated by Jenkins]"; then
+                                git push origin master
+                            else
+                                echo "Merge conflict detected. Aborting."
+                                git merge --abort
+                                exit 1
+                            fi
                             
-                            git checkout --ours JENKINSFILE || true
-                            git checkout --ours .gitattributes || true
-                            
-                            git add JENKINSFILE || true
-                            git add .gitattributes || true
-                            
-                            git add -A
-                            
-                            git commit -m "Merge develop into master [Automated by Jenkins]"
-                            
-                            git push origin master
+                            whoami
+                            hostname
                         '''
                     }
                 }

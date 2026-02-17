@@ -4,13 +4,25 @@ pipeline {
     options { skipDefaultCheckout() }
     
     environment {
-        DEPLOY_ENV = 'production'   // default | staging | production
+        DEPLOY_ENV = 'staging'   // default | staging | production
     }
-
+    
     stages {
         stage('Get Code') {
             steps {
-                git branch:'master', url:'https://github.com/Soratadev/todo-list-aws'
+                git branch:'develop', url:'https://github.com/Soratadev/todo-list-aws'
+                stash name:'code', includes:'**'
+            }
+        }
+        stage('Static Test') {
+            steps {
+                unstash name:'code'
+                sh '''
+                    python3 -m flake8 --exit-zero --format=pylint src >flake8.out
+                    python3 -m bandit -r src -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}" || true
+                '''
+                recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')], qualityGates: [[threshold: 10, type: 'TOTAL', unstable: true], [threshold: 11, type: 'TOTAL', unstable: false]]
+                recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')], qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true], [threshold: 2, type: 'TOTAL', unstable: false]]
             }
         }
         stage ('Build') {
@@ -57,7 +69,7 @@ pipeline {
                     env.BASE_URL = sh(
                         script: '''
                             aws cloudformation describe-stacks \
-                            --stack-name production-todo-list-aws \
+                            --stack-name staging-todo-list-aws \
                             --query 'Stacks[0].Outputs[?OutputKey==`BaseUrlApi`].OutputValue' \
                             --region us-east-1 \
                             --output text
@@ -69,9 +81,50 @@ pipeline {
                     bash -euxo pipefail <<'EOF'
                     echo "Running tests against $BASE_URL"
 
-                    pytest test/integration/todoApiTest.py::TestApi::test_api_listtodos
-                    pytest test/integration/todoApiTest.py::TestApi::test_api_gettodo
+                    pytest --junitxml=result-rest.xml test/integration/todoApiTest.py
                 '''
+                junit 'result-rest.xml'
+            }
+        }
+       stage('Promote') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                        sh '''
+                            bash -euxo pipefail
+        
+                            rm -rf repo
+        
+                            git clone https://Soratadev:${GITHUB_TOKEN}@github.com/Soratadev/todo-list-aws.git repo
+                            cd repo
+        
+                            git config user.name "Soratadev"
+                            git config user.email "sorata.arctica@gmail.com"
+        
+                            # Traer todas las ramas
+                            git fetch origin
+        
+                            # Sincronizar develop limpio
+                            git checkout develop
+                            git reset --hard origin/develop
+        
+                            # Sincronizar master limpio
+                            git checkout master
+                            git reset --hard origin/master
+        
+                            # Merge controlado
+                            git config merge.ours.driver true
+                            
+                            if git merge --no-ff origin/develop -m "Merge develop into master [Automated by Jenkins]"; then
+                                git push origin master
+                            else
+                                echo "Merge conflict detected. Aborting."
+                                git merge --abort
+                                exit 1
+                            fi
+                        '''
+                    }
+                }
             }
         }
     }
